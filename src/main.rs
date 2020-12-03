@@ -7,6 +7,9 @@ use std::time::Duration;
 
 extern crate tokio;
 
+use hyper::server::{Server, Request, Response};
+use hyper::status::StatusCode;
+
 // TODO: Should probably use a config at this point
 const GH_TOKEN: &str = include_str!("../gh.token");
 const GH_USER: &str = include_str!("../gh.username.txt");
@@ -137,10 +140,10 @@ async fn main() -> Result<(), std::io::Error> {
     });
 
     // Then bind and serve...
-    hyper::Server::bind(&"127.0.0.1:8080".parse().unwrap())
-        .serve(make_service)
-        .await
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    Server::http("127.0.0.1:8089").unwrap().handle(|mut req: Request, mut res: Response| {
+        io::copy(&mut req, &mut res.start().unwrap()).unwrap();
+        *res.status_mut() = StatusCode::OK
+    }).unwrap();
 
     Ok(())
 }
