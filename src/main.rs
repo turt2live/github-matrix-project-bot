@@ -7,15 +7,15 @@ use std::time::Duration;
 
 extern crate tokio;
 
-use hyper::server::{Server, Request, Response};
-use hyper::status::StatusCode;
+use std::net::SocketAddr;
+use hyper::{Server};
 
 // TODO: Should probably use a config at this point
 const GH_TOKEN: &str = include_str!("../gh.token");
 const GH_USER: &str = include_str!("../gh.username.txt");
 const MX_TOKEN: &str = include_str!("../mx.token");
 const TEAM_NAME: &str = include_str!("../gh.team.txt"); // just the suffix
-const HSURL: &str = include_str!("../hs_baseurl.txt");
+const HSURL: &str = include_str!("../hs_base_url.txt");
 const ROOM_ID: &str = include_str!("../room_id.txt");
 
 #[derive(Deserialize, Debug, Clone)]
@@ -36,28 +36,36 @@ impl PendingReviewChecker {
     }
 
     async fn get_review_count(&self) -> Result<i64, Box<dyn std::error::Error + 'static>> {
-        let mut baseUrl: String = "https://api.github.com/search/issues?q=is%3Aopen%20is%3Apr%20team-review-requested%3Amatrix-org%2F".to_owned();
+        let mut base_url: String = "https://api.github.com/search/issues?q=is%3Aopen%20is%3Apr%20team-review-requested%3Amatrix-org%2F".to_owned();
 
-        let mut resp = self.client.get(&(baseUrl + TEAM_NAME))
+        let mut resp = self.client.get(&(base_url + TEAM_NAME))
+            .header(reqwest::header::USER_AGENT, "Github Review Queue 1.1")
             .basic_auth(GH_USER.trim(), Some(GH_TOKEN.trim()))
             .send().await?;
+
+        println!("Status: {}", resp.status());
+        //println!("Status: {:#?}", resp.text().await?);
 
         let mut search: GithubSearchResult = resp.json().await?;
 
-        let matrixCount = search.total_count;
+        let matrix_count = search.total_count;
 
         // idk what I'm doing, so copy/paste for vector-im
 
-        baseUrl = "https://api.github.com/search/issues?q=is%3Aopen%20is%3Apr%20team-review-requested%3Avector-im%2F".to_owned();
-        resp = self.client.get(&(baseUrl + TEAM_NAME))
+        base_url = "https://api.github.com/search/issues?q=is%3Aopen%20is%3Apr%20team-review-requested%3Avector-im%2F".to_owned();
+        resp = self.client.get(&(base_url + TEAM_NAME))
+            .header(reqwest::header::USER_AGENT, "Github Review Queue 1.1")
             .basic_auth(GH_USER.trim(), Some(GH_TOKEN.trim()))
             .send().await?;
 
+        println!("Status: {}", resp.status());
+        //println!("Status: {:#?}", resp.text().await?);
+
         search = resp.json().await?;
 
-        let vectorCount = search.total_count;
+        let vector_count = search.total_count;
 
-        Ok(vectorCount + matrixCount)
+        Ok(vector_count + matrix_count)
     }
 
     async fn update_state(
@@ -71,13 +79,13 @@ impl PendingReviewChecker {
         };
 
         // This feels overly verbose for string concatenation
-        let mut reqUrl: String = "".to_owned();
-        reqUrl.push_str(HSURL);
-        reqUrl.push_str("/_matrix/client/r0/rooms/");
-        reqUrl.push_str(ROOM_ID);
-        reqUrl.push_str("/state/re.jki.counter/");
+        let mut req_url: String = "".to_owned();
+        req_url.push_str(HSURL);
+        req_url.push_str("/_matrix/client/r0/rooms/");
+        req_url.push_str(ROOM_ID);
+        req_url.push_str("/state/re.jki.counter/");
 
-        self.client.put(&(reqUrl + "gh_reviews"))
+        self.client.put(&(req_url + "gh_reviews"))
             .header("Authorization", format!("Bearer {}", MX_TOKEN.trim()))
             .json(&json!({
                 "title": "Pending reviews",
@@ -98,8 +106,7 @@ impl PendingReviewChecker {
             review_count,
         );
 
-        self.update_state(review_count)
-            .await?;
+        self.update_state(review_count).await?;
 
         Ok(())
     }
@@ -113,15 +120,15 @@ impl PendingReviewChecker {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), std::io::Error> {
+async fn main() {
     let checker = PendingReviewChecker::new();
 
     let c = checker.clone();
     tokio::spawn(async move {
-        let mut interval = tokio_timer::Interval::new_interval(Duration::from_secs(30));
+        let mut interval = tokio::time::interval(Duration::from_secs(30));
         loop {
             c.do_check().await;
-            interval.next().await;
+            interval.tick().await;
         }
     });
 
@@ -131,7 +138,6 @@ async fn main() -> Result<(), std::io::Error> {
             Ok::<_, hyper::Error>(hyper::service::service_fn(move |_req| {
                 let checker = checker.clone();
                 async move {
-                    tokio_timer::delay_for(Duration::from_secs(3)).await;
                     checker.do_check().await;
                     Ok::<_, hyper::Error>(hyper::Response::new(hyper::Body::from("Done")))
                 }
@@ -140,10 +146,11 @@ async fn main() -> Result<(), std::io::Error> {
     });
 
     // Then bind and serve...
-    Server::http("127.0.0.1:8089").unwrap().handle(|mut req: Request, mut res: Response| {
-        io::copy(&mut req, &mut res.start().unwrap()).unwrap();
-        *res.status_mut() = StatusCode::OK
-    }).unwrap();
+    let addr = SocketAddr::from(([127, 0, 0, 1], 8089));
+    let server = Server::bind(&addr).serve(make_service);
 
-    Ok(())
+    // Run this server for... forever!
+    if let Err(e) = server.await {
+        eprintln!("server error: {}", e);
+    }
 }

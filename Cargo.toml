@@ -5,22 +5,22 @@ name = "github-matrix-project"
 version = "0.1.1"
 
 [dependencies]
-serde = "1.0.89"
-serde_derive = "1.0.89"
-serde_json = "1.0.39"
+serde = "1.0.117"
+serde_derive = "1.0.117"
+serde_json = "1.0.60"
 
-hyper = "0.13.0-alpha.4"
-tokio = "=0.2.0-alpha.6"
+hyper = "0.13.9"
 tokio-timer = "0.3.0-alpha.6"
+tokio = { version = "0.2", features = ["full"] }
 
 
 [dependencies.futures]
 package = "futures-preview"
-version = "=0.3.0-alpha.19"
+version = "0.3.0-alpha.19"
 features = ["compat"]
 
 
 [dependencies.reqwest]
 package = "reqwest"
-version = "=0.10.0-alpha.2"
+version = "0.10.9"
 features = ["json"]
