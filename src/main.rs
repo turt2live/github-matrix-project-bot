@@ -7,8 +7,13 @@ use std::time::Duration;
 
 extern crate tokio;
 
+// TODO: Should probably use a config at this point
 const GH_TOKEN: &str = include_str!("../gh.token");
+const GH_USER: &str = include_str!("../gh.username.txt");
 const MX_TOKEN: &str = include_str!("../mx.token");
+const TEAM_NAME: &str = include_str!("../gh.team.txt"); // just the suffix
+const HSURL: &str = include_str!("../hs_baseurl.txt");
+const ROOM_ID: &str = include_str!("../room_id.txt");
 
 #[derive(Deserialize, Debug, Clone)]
 struct GithubSearchResult {
@@ -28,54 +33,33 @@ impl PendingReviewChecker {
     }
 
     async fn get_review_count(&self) -> Result<i64, Box<dyn std::error::Error + 'static>> {
-        let resp = self.client.get("https://api.github.com/search/issues?q=is%3Aopen%20is%3Apr%20team-review-requested%3Amatrix-org%2Fsynapse-core")
-            .basic_auth("erikjohnston", Some(GH_TOKEN.trim()))
+        let mut baseUrl: String = "https://api.github.com/search/issues?q=is%3Aopen%20is%3Apr%20team-review-requested%3Amatrix-org%2F".to_owned();
+
+        let mut resp = self.client.get(&(baseUrl + TEAM_NAME))
+            .basic_auth(GH_USER.trim(), Some(GH_TOKEN.trim()))
             .send().await?;
 
-        let search: GithubSearchResult = resp.json().await?;
+        let mut search: GithubSearchResult = resp.json().await?;
 
-        Ok(search.total_count)
-    }
+        let matrixCount = search.total_count;
 
-    async fn get_review_column_count(&self) -> Result<i64, Box<dyn std::error::Error + 'static>> {
-        let resp = self
-            .client
-            .get("https://api.github.com/projects/columns/6476200/cards")
-            .basic_auth("erikjohnston", Some(GH_TOKEN.trim()))
-            .header("Accept", "application/vnd.github.inertia-preview+json")
-            .send()
-            .await?;
+        // idk what I'm doing, so copy/paste for vector-im
 
-        let resp: serde_json::Value = resp.json().await?;
+        baseUrl = "https://api.github.com/search/issues?q=is%3Aopen%20is%3Apr%20team-review-requested%3Avector-im%2F".to_owned();
+        resp = self.client.get(&(baseUrl + TEAM_NAME))
+            .basic_auth(GH_USER.trim(), Some(GH_TOKEN.trim()))
+            .send().await?;
 
-        let cards: Vec<serde_json::Value> = serde_json::from_value(resp)?;
+        search = resp.json().await?;
 
-        Ok(cards.len() as i64)
-    }
+        let vectorCount = search.total_count;
 
-    async fn get_in_progress_column_count(
-        &self,
-    ) -> Result<i64, Box<dyn std::error::Error + 'static>> {
-        let resp = self
-            .client
-            .get("https://api.github.com/projects/columns/4179915/cards")
-            .basic_auth("erikjohnston", Some(GH_TOKEN.trim()))
-            .header("Accept", "application/vnd.github.inertia-preview+json")
-            .send()
-            .await?;
-
-        let resp: serde_json::Value = resp.json().await?;
-
-        let cards: Vec<serde_json::Value> = serde_json::from_value(resp)?;
-
-        Ok(cards.len() as i64)
+        Ok(vectorCount + matrixCount)
     }
 
     async fn update_state(
         &self,
         review_count: i64,
-        review_column_count: i64,
-        in_progress_column_count: i64,
     ) -> Result<(), Box<dyn std::error::Error + 'static>> {
         let severity = if review_count > 0 {
             "warning"
@@ -83,7 +67,14 @@ impl PendingReviewChecker {
             "normal"
         };
 
-        self.client.put("https://jki.re/_matrix/client/r0/rooms/!zVpPeWAObqutioiNzB:jki.re/state/re.jki.counter/gh_reviews")
+        // This feels overly verbose for string concatenation
+        let mut reqUrl: String = "".to_owned();
+        reqUrl.push_str(HSURL);
+        reqUrl.push_str("/_matrix/client/r0/rooms/");
+        reqUrl.push_str(ROOM_ID);
+        reqUrl.push_str("/state/re.jki.counter/");
+
+        self.client.put(&(reqUrl + "gh_reviews"))
             .header("Authorization", format!("Bearer {}", MX_TOKEN.trim()))
             .json(&json!({
                 "title": "Pending reviews",
@@ -93,40 +84,18 @@ impl PendingReviewChecker {
             }))
             .send().await?;
 
-        self.client.put("https://jki.re/_matrix/client/r0/rooms/!zVpPeWAObqutioiNzB:jki.re/state/re.jki.counter/gh_review_column")
-            .header("Authorization", format!("Bearer {}", MX_TOKEN.trim()))
-            .json(&json!({
-                "title": "In Review Column",
-                "value": review_column_count,
-                "severity": "normal",
-                "link": "https://github.com/orgs/matrix-org/projects/8#column-6476200",
-            }))
-            .send().await?;
-
-        self.client.put("https://jki.re/_matrix/client/r0/rooms/!zVpPeWAObqutioiNzB:jki.re/state/re.jki.counter/gh_total_wip")
-            .header("Authorization", format!("Bearer {}", MX_TOKEN.trim()))
-            .json(&json!({
-                "title": "Total Work In Progress",
-                "value": review_column_count + in_progress_column_count,
-                "severity": "normal",
-                "link": "https://github.com/orgs/matrix-org/projects/8#column-4179915",
-            }))
-            .send().await?;
-
         Ok(())
     }
 
     async fn do_check_inner(&self) -> Result<(), Box<dyn std::error::Error + 'static>> {
         let review_count = self.get_review_count().await?;
-        let review_column_count = self.get_review_column_count().await?;
-        let in_progress_column_count = self.get_in_progress_column_count().await?;
 
         println!(
-            "There are {} pending reviews and {} in review column",
-            review_count, review_column_count
+            "There are {} pending reviews",
+            review_count,
         );
 
-        self.update_state(review_count, review_column_count, in_progress_column_count)
+        self.update_state(review_count)
             .await?;
 
         Ok(())
